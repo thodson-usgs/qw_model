@@ -5,13 +5,13 @@ import pandas as pd
 from sklearn import linear_model
 from datetime import datetime
 
-from pandas.core.indexes.datetimes import DatetimeIndex
-
-class DatetimeIndex(DatetimeIndex):
+#from pandas.core.indexes.datetimes import DatetimeIndex
+import pandas as pd
+class DatetimeIndex(pd.DatetimeIndex):
     """
     """
-    def __init__(self):
-        super().__init__()
+    #def __init__(self, data=None):
+    #    super().__init__(data)
 
     def year_start(self):
         """ Return the year start for each timestamp in index
@@ -24,12 +24,12 @@ class DatetimeIndex(DatetimeIndex):
         """
         return pd.to_datetime(self.year + 1, format="%Y")
 
-    def decimalyear(self):
+    def decimal_year(self):
         """
         """
-        year_part = ts - year_start(ts)
-        year_length = year_end(ts) - year_start(ts)
-        return dt.year + year_part/year_length
+        year_part = self - self.year_start()
+        year_length = self.year_end() - self.year_start()
+        return self.year + year_part.total_seconds()/year_length.total_seconds()
 
 
 class HierarchicalSurrogateModel:
@@ -44,10 +44,19 @@ class TimeSeriesSurrogateModel:
         """
         """
         self._dataframe = dataframe
-        self._constutent = constituent
+        self._constituent = constituent
         self._surrogates = surrogates
         self._datetimeindex = DatetimeIndex(dataframe.index)
 
+    @classmethod
+    def from_raw(cls, surrogates, constituents):
+        """
+        """
+        # perform time based merge of constituents and surrogates
+        #df = pd.merge_asof
+        #model = cls(dataframe, constituent, surrogates)
+        #return model
+        pass
 
     def _constituent(self, array=True):
         """
@@ -100,138 +109,89 @@ class WRSST(TimeSeriesSurrogateModel):
         self.surrogate_halfwidth = surrogate_hw
         self.trend_halfwidth = trend_hw
         self.time_step = time_step
+        self.halfwidth_vector = self._halfwidth_vector()
 
         self.__cached_design_matrix = None
         self.__cached_reg = None #consider making this an array
 
-    def predict(self, method='ols'):
-        """ Predict time series given regression
+        # create design matrix?
+
+    def _halfwidth_vector(self):
+        """
         """
 
-        pass
+        halfwidth_vector = np.empty(len(self._surrogates) + 3)
+        halfwidth_vector[:-3] = self.surrogate_halfwidth
+        halfwidth_vector[:-1] = self.trend_halfwidth
+        halfwidth_vector[:-2] = self.seasonal_halfwidth
+        halfwidth_vector[:-3] = 0
 
-    def fit(self, t, s, sample_weights=None, method=None):
+    def _get_design_matrix(self):
         """
-        Parameters
-        ----------
-        t : datetime in decimal years
-        sample_weights : array
-            Optionally used to specify sample weights for regression
         """
-        #these should access data rather than generate
-        M = self.__design_matrix()
-        y = np.log(self.__constituent_array())
+        # check for cached design matrix
+        if self.__cached_design_matrix:
+            design_matrix = self.__cached_design_matrix
 
-        if not sample_weights:
-            sample_weights = self.time_weight(t) * self.surrogate_weight(s)
+        # otherwise, initialize a new design matrix
+        else:
+            #import pdb; pdb.set_trace()
+            surrogate_values = self._dataframe[self._constituent].values
+            decimal_date = self._datetimeindex.decimal_year()
 
-        if method == 'ols':
-            # use ordinary least squares
-            reg = linear_model.LinearRegression(n_jobs=-1)
+            # allocate matrix with a column for each surrogate and the three time
+            # variables: t, cos(t), sin(t)
+            design_matrix = np.empty([surrogate_values.shape[0],
+                                      len(self._surrogates) + 3])
 
-            reg.fit(M, y, sample_weight = sample_weights)
+            design_matrix[:,len(self._surrogates)] = np.log(surrogate_values)
+            design_matrix[:,-1] = decimal_date
+            design_matrix[:,-2] = np.cos(2*np.pi*decimal_date)
+            design_matrix[:,-3] = np.sin(2*np.pi*decimal_date)
+            #XXX check sin and cos functions
 
-        reg.sample_weights = sample_weights
+            self.__cached_design_matrix = design_matrix
 
-        return reg
-
-
-
-        # create vector containing dependent variable
-
-        # calculate weights
-
-        # save all parameters and all r2
-
-
-    def __design_matrix(self):
-        """ Create the design matrix.
-
-        For example to fit a quadratic polynomial of the form y= a + b*x, the
-        create a design matrix with constant column of 1s and a column
-        containing x.
+        return design_matrix
+    
+    @staticmethod
+    def _design_matrix_distance(design_matrix, design_vector):
         """
-        #modify to use a cached design matrix
-        return 0
 
-
-    def surrogate_weight(self, surrogate_obs):
-        """ Calculate weights for surrogate observations
-
-        Calculate weights of discharge observations using a tricube weight
-        function (Tukey, 1977).
-
-        Parameters
-        ----------
-
-        Return
-        ------
-        An array of surrogate weights
+        Parametres
+        ==========
+        design_matrix : array
+        design_vector : array
         """
-        distance = WRSST.surrogate_distance(surrogate_obs, self.surrogates)
-        weight = WRSST.tricubic_weight(distance, self.surrogate_halfwidth)
+        return np.abs(design_matrix - design_vector)
 
-        # return the product of all the surrogate weights
-        return np.prod(weight, axis=0)
-
-
-    def time_weight(self, time_o, annual=False):
+    def _distance_to_design_matrix(design_vector):
         """
-        Parameters
-        ----------
-        time_o : float
-            Decimal year of observation which weights are relative to.
-
-        timeseries : array
-            An array containing the time of each observation in decimal years.
-
-        Returns
-        -------
-        An array of time weights for each observations.
+        Paramaters
+        ==========
+        design_vector : array
+            an array with same columns as the design matrix
         """
-        if annual:
-            trend_distance = 1
+        if self.__cached_design_matrix:
+            design_matrix = self.__cached_design_matrix
 
         else:
-            trend_distance = self.trend_distance(time_o, timeseries)
+            design_matrix = self._get_design_matrix()
 
-        seasonal_distance = self.seasonal_distance(time_o, timeseries)
-        seasonal_weight = self.tricubic_weight(seasonal_distance,
-                                               self.trend_halfwidth)
-        trend_weight = self.tricubic_weight(trend_distance,
-                                            self.seasonal_halfwidth)
+        # XXX
 
-        # return the product of all time weights
-        return seasonal_weight * trend_weight
 
+    def _get_response_vector(self):
+        """
+        """
+        constituent_values = self._dataframe[self._constituent].values
+        return np.log(constituent_values)
 
     @staticmethod
-    def seasonal_distance(time_o, time_i):
-        """ Compute the seasonal distance between observations
-
-        XXX does this need an abs?
+    def distance(array_1, array_2):
         """
-        t_d = WRSST.trend_distance(time_o, time_i)
-
-        return = np.minimum(np.ceil(d_t) - d_t,
-                            d_t - np.floor(d_t))
-
-
-    @staticmethod
-    def trend_distance(time_o, time_i):
-        """ Compute the trend distance between observations
         """
-        return np.abs(time_o - self.time_i)
-
-
-    @staticmethod
-    def surrogate_distance(surrogate_o, surrogate_i):
-        """ Compute the distance between surrogate observations
-        """
-        distance = np.log(surrogate_o) - np.log(surrogate_i)
-
-        return np.abs(distance)
-
+        return np.abs(array_1 - array_2)
 
     @staticmethod
     def tricubic_weight(distance, halfwidth_window):
@@ -240,7 +200,7 @@ class WRSST(TimeSeriesSurrogateModel):
         Parameters
         ----------
         distance : array
-        halfwidth_window : float
+        halfwidth_window : array
 
         Returns
         -------
@@ -248,4 +208,106 @@ class WRSST(TimeSeriesSurrogateModel):
         """
         weights = (1 - (distance/halfwidth_window)**3)**3
 
-        return np.where(weights < halfwidth_window, weights, 0)
+        weights =  np.where(weights < halfwidth_window, weights, 0)
+
+        return np.prod(weights, axis=0)
+
+def _fit(self, design_vector, sample_weight=None, method=None):
+        """
+        Parameters
+        ----------
+        t : datetime in decimal years
+        s : surrogates
+        sample_weights : array
+            Optionally used to specify sample weights for regression
+        """
+        #these should access data rather than generate
+        #move the generation to init
+        M = self._get_design_matrix()
+        y = self._get_response_vector()
+        x = design_vector
+
+        if not sample_weight:
+
+            sample_distance = distance(M,x)
+            sample_weight = self.tricubic_weight(sample_distance,
+                                                  self.halfwidth_vector)
+
+        reg = linear_model.LinearRegression(n_jobs=-1)
+        reg.fit(M, y, sample_weight = sample_weight)
+
+
+        self.__model = reg
+        # create vector containing dependent variable
+
+        # calculate weights
+
+def _predict_one(self, design_vector):
+    """
+    """
+    model = self._fit(design_vector)
+    prediction = model.predict(design_vector)
+    return prediction
+
+def predict(self, design_matrix):
+    """
+    XXX still need to correct for smearing
+    """
+    prediction = np.zeros(desing_matrix.shape[0])
+
+    for i in design_matrix:
+        prediction[i] = self._predict_one(design_matrix[i])
+
+
+    return prediction
+
+
+#XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+    def predict(self, surrogates):
+        """ Predict a time series, this should be parallized
+
+        Takes a dataframe, converts surrogates to design matrix. For each row 
+        fit a regression, make a prediction, and return all predictions
+        Parameters
+        ----------
+
+        """
+        pass
+
+
+    def _predict(self, t, s):
+        """ Predict time series given regression
+
+        inputs
+        """
+        #convert surrogates to design matrix
+
+        return self.__model.predict(design_matrix)
+
+
+    def resid(self):
+        """
+        """
+        # check for cached results
+        if self.__resid:
+            return self.__resid
+
+        else:
+            #
+            pass
+
+
+        for i in df:
+            pass
+
+        return predicted, residuals
+
+    def loo(self):
+        """Return leave one out resduals
+        """
+        # check for cached results
+        if self.__loo:
+            return self.__loo
+
+        else:
+            pass
