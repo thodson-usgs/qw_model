@@ -7,5 +7,5 @@ setup(name='qw_model',
       author='Timothy Hodson',
       author_email='thodson@usgs.gov',
       license='GNU',
-      packages=['qw_reports'],
+      packages=['qw_model'],
       zip_safe=False)
